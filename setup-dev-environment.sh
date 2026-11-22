@@ -105,6 +105,88 @@ PY
     fi
 }
 
+# Ensure ~/.tmux.conf has a managed, idempotent block, instead of overwriting the
+# whole file. The previous approach did an exact-string comparison of the entire file
+# and overwrote it wholesale on any mismatch - which silently destroyed any manual
+# edits made outside this script (e.g. `@resurrect-processes`, personal keybindings).
+ensure_tmux_conf_block() {
+    local tmux_conf="$HOME/.tmux.conf"
+    local block_start="# >>> mac-setup >>>"
+    local block_end="# <<< mac-setup <<<"
+    local block_content
+    block_content="$(cat <<'EOF'
+# >>> mac-setup >>>
+unbind-key C-b
+set -g prefix C-a
+bind-key C-a send-prefix
+
+bind r source ~/.tmux.conf \; display-message "Reloaded!"
+set -g  base-index 1
+set -g  renumber-windows on
+
+set -gq allow-passthrough on
+
+# List of plugins
+set -g @plugin 'tmux-plugins/tpm'
+set -g @plugin 'tmux-plugins/tmux-sensible'
+
+set -g @plugin 'egel/tmux-gruvbox'
+
+
+set -g renumber-windows on   # renumber all windows when any window is closed
+set -g history-limit 1000000 # increase history size (from 2,000)
+set -g default-terminal "screen-256color"
+
+set -g @plugin 'tmux-plugins/tmux-resurrect'
+set -g @plugin 'tmux-plugins/tmux-continuum'
+
+# Split winowes
+bind | split-window -h
+bind - split-window -v
+
+set -g @continuum-restore 'on'
+
+setw -g mode-keys vi
+set -g history-limit 1000000
+
+# Other examples:
+# set -g @plugin 'github_username/plugin_name'
+# set -g @plugin 'github_username/plugin_name#branch'
+# set -g @plugin 'git@github.com:user/plugin'
+# set -g @plugin 'git@bitbucket.com:user/plugin'
+
+# Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
+run '~/.tmux/plugins/tpm/tpm'
+# <<< mac-setup <<<
+EOF
+)"
+
+    if [[ -f "$tmux_conf" ]]; then
+        if grep -q "$block_start" "$tmux_conf"; then
+            /usr/bin/python3 - <<PY
+from pathlib import Path
+tmux_conf = Path("$HOME/.tmux.conf")
+text = tmux_conf.read_text()
+start = "$block_start"
+end = "$block_end"
+replacement = """$block_content"""
+import re
+pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
+text, count = pattern.subn(replacement.strip(), text)
+if count == 0:
+    text = text.rstrip() + "\\n\\n" + replacement.strip() + "\\n"
+tmux_conf.write_text(text)
+PY
+        else
+            print_warning "~/.tmux.conf predates the managed-block format - appending instead of overwriting."
+            print_warning "Your existing config is fully preserved above; the plugin list etc. may now appear twice - safe to manually tidy up."
+            printf "\n%s\n" "$block_content" >> "$tmux_conf"
+        fi
+    else
+        printf "%s\n" "$block_content" > "$tmux_conf"
+    fi
+}
+
 # Track install status
 ITERM2_STATUS="missing"
 TMUX_STATUS="missing"
@@ -201,67 +283,12 @@ else
     fi
 fi
 
-# Configure tmux (~/.tmux.conf)
+# Configure tmux (~/.tmux.conf) - via a managed block, so any manual edits outside
+# it (e.g. `@resurrect-processes`, personal keybindings) survive re-runs.
 print_info "Configuring tmux (~/.tmux.conf)..."
 TMUX_CONF="$HOME/.tmux.conf"
-TMUX_CONF_CONTENT='unbind-key C-b
-set -g prefix C-a
-bind-key C-a send-prefix
-
-bind r source ~/.tmux.conf \; display-message "Reloaded!"
-set -g  base-index 1
-set -g  renumber-windows on
-
-set -gq allow-passthrough on
-
-# List of plugins
-set -g @plugin '\''tmux-plugins/tpm'\''
-set -g @plugin '\''tmux-plugins/tmux-sensible'\''
-
-set -g @plugin '\''egel/tmux-gruvbox'\''
-
-
-set -g renumber-windows on   # renumber all windows when any window is closed
-set -g history-limit 1000000 # increase history size (from 2,000)
-set -g default-terminal "screen-256color"
-
-set -g @plugin '\''tmux-plugins/tmux-resurrect'\''
-set -g @plugin '\''tmux-plugins/tmux-continuum'\''
-
-# Split winowes
-bind | split-window -h
-bind - split-window -v
-
-set -g @continuum-restore '\''on'\''
-
-setw -g mode-keys vi
-set -g history-limit 1000000 
-
-# Other examples:
-# set -g @plugin '\''github_username/plugin_name'\''
-# set -g @plugin '\''github_username/plugin_name#branch'\''
-# set -g @plugin '\''git@github.com:user/plugin'\''
-# set -g @plugin '\''git@bitbucket.com:user/plugin'\''
-
-# Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
-run '\''~/.tmux/plugins/tpm/tpm'\'''
-
-# Check if config needs updating
-if [[ -f "$TMUX_CONF" ]]; then
-    EXISTING_CONF=$(cat "$TMUX_CONF")
-    if [[ "$EXISTING_CONF" == "$TMUX_CONF_CONTENT" ]]; then
-        print_info "tmux config is already up to date"
-        TMUX_CONF_STATUS="ok"
-    else
-        print_info "Updating tmux config..."
-        echo "$TMUX_CONF_CONTENT" > "$TMUX_CONF"
-        TMUX_CONF_STATUS="ok"
-    fi
-else
-    print_info "Creating tmux config..."
-    echo "$TMUX_CONF_CONTENT" > "$TMUX_CONF"
-    TMUX_CONF_STATUS="ok"
-fi
+ensure_tmux_conf_block
+TMUX_CONF_STATUS="ok"
 
 # Install TPM plugins (if TPM is installed)
 if [[ -d "$TPM_DIR" && "$TMUX_CONF_STATUS" == "ok" ]]; then
